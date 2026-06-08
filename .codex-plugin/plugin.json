@@ -1,0 +1,27 @@
+{
+  "name": "codex-agent-teams",
+  "version": "0.1.0+codex.20260608211450",
+  "description": "Claude-style agent team coordination for Codex using subagent-first orchestration, shared state, messages, wakeups, hooks, and gates.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Agent Teams",
+    "shortDescription": "Run Claude-style agent teams in Codex.",
+    "longDescription": "Codex Agent Teams recreates Claude Code's agent-team workflow with a lead skill, named teammates, a shared JSON task list, direct messages, dependency-aware claiming, subagent-first launch plans, dashboard and inbox commands, dependency wakeups, plan and verification gates, and hook-compatible stop/idle wrappers.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Launch a subagent team",
+      "Split this into teammate packets",
+      "Check my agent team stop gates"
+    ],
+    "brandColor": "#6D5EF6"
+  }
+}
