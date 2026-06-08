@@ -1,6 +1,6 @@
 {
   "name": "codex-agent-teams",
-  "version": "0.1.0+codex.20260608211450",
+  "version": "0.1.0+codex.20260608214149",
   "description": "Claude-style agent team coordination for Codex using subagent-first orchestration, shared state, messages, wakeups, hooks, and gates.",
   "author": {
     "name": "Local developer"
