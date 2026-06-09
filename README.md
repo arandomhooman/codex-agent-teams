@@ -6,16 +6,10 @@ This README is written for agents first. If you are a human, the easiest path is
 
 ## Tell Your Agent To Install It
 
-Give your Codex agent this prompt, replacing `<repo-url>` with the GitHub URL for this repository:
+Give your Codex agent this prompt:ory:
 
 ```text
-Please install Codex Agent Teams for me from <repo-url>.
-
-Clone the repo to a stable local plugin path such as ~/plugins/codex-agent-teams.
-Add or update my personal Codex plugin marketplace so it points at that local clone.
-Validate the plugin, install it with `codex plugin add codex-agent-teams@personal`, and verify it appears in `codex plugin list`.
-If the plugin source changes during install, update the Codex cachebuster first.
-After install, tell me the local source path, installed version, and the exact command I should use or set as CODEX_AGENT_TEAM_COMMAND.
+Please install Codex Agent Teams for me from <rehttps://github.com/arandomhooman/codex-agent-teams/edit/main/README.md.
 ```
 
 If your agent is doing the install manually, the stable command should look like one of these:
