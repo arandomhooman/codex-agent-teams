@@ -216,9 +216,3 @@ python path\to\plugin-creator\scripts\update_plugin_cachebuster.py path\to\codex
 codex plugin add codex-agent-teams@personal
 ```
 
-## Research Sources
-
-- Claude agent teams: https://code.claude.com/docs/en/agent-teams
-- Claude subagents: https://docs.anthropic.com/en/docs/claude-code/sub-agents
-- Claude hooks: https://docs.anthropic.com/en/docs/claude-code/hooks
-- Context7 Claude Code docs ID used during development: `/anthropics/claude-code`
