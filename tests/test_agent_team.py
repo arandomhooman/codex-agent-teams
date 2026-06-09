@@ -537,6 +537,31 @@ class AgentTeamCliTests(unittest.TestCase):
             stale_locks = list(lock_path.parent.glob("state.lock.stale.*"))
             self.assertEqual(len(stale_locks), 1)
 
+    def test_state_lock_retries_transient_permission_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / ".codex-agent-teams" / "state.lock"
+            real_open = AGENT_TEAM.os.open
+            real_sleep = AGENT_TEAM.sleep_with_backoff
+            attempts = []
+
+            def flaky_open(path, flags, *args, **kwargs):
+                if Path(path) == lock_path and not attempts:
+                    attempts.append(path)
+                    raise PermissionError("simulated Windows lock race")
+                return real_open(path, flags, *args, **kwargs)
+
+            try:
+                AGENT_TEAM.os.open = flaky_open
+                AGENT_TEAM.sleep_with_backoff = lambda *args, **kwargs: None
+                with AGENT_TEAM.state_lock(tmp):
+                    self.assertTrue(lock_path.exists())
+            finally:
+                AGENT_TEAM.os.open = real_open
+                AGENT_TEAM.sleep_with_backoff = real_sleep
+
+            self.assertEqual(len(attempts), 1)
+            self.assertFalse(lock_path.exists())
+
     def test_state_backup_and_repair_restore_corrupt_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_cli(
@@ -832,6 +857,57 @@ class AgentTeamCliTests(unittest.TestCase):
             self.assertIn("Builder should inspect scripts/agent_team.py first.", prompt)
             self.assertIn("Citation quality:", prompt)
             self.assertIn("Cite changed files and commands run.", prompt)
+
+    def test_reviewer_prompt_challenges_claims_and_final_report_quality(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_cli_inprocess(
+                tmp,
+                "init",
+                "--title",
+                "Reviewer challenge test",
+                "--lead",
+                "lead",
+                "--member",
+                "reviewer=Review final report quality",
+                "--task",
+                "T1:reviewer:Review final synthesis",
+            )
+
+            prompt = json.loads(run_cli_inprocess(tmp, "prompt", "--agent", "reviewer").stdout)["prompt"]
+
+            self.assertIn("challenge unsupported claims", prompt)
+            self.assertIn("separate evidence from inference", prompt)
+            self.assertIn("final report quality", prompt)
+
+    def test_context_file_can_be_referenced_without_embedding_full_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            context_file = Path(tmp) / "large-context.md"
+            context_file.write_text("VERY-LONG-CONTEXT " * 100, encoding="utf-8")
+            run_cli_inprocess(
+                tmp,
+                "init",
+                "--title",
+                "Reference context test",
+                "--lead",
+                "lead",
+                "--member",
+                "builder=Build",
+                "--task",
+                "T1:builder:Build",
+                "--context-file",
+                "large-context.md",
+                "--context-mode",
+                "reference",
+            )
+
+            prompt = json.loads(run_cli_inprocess(tmp, "launch-plan", "--backend", "subagent").stdout)["actions"][0][
+                "spawn_args"
+            ]["message"]
+
+            self.assertIn("Shared context files:", prompt)
+            self.assertIn("large-context.md", prompt)
+            self.assertIn("Read this file from the shared workspace", prompt)
+            self.assertNotIn("VERY-LONG-CONTEXT", prompt)
 
     def test_bind_subagent_and_message_delivery_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2188,6 +2264,8 @@ class AgentTeamCliTests(unittest.TestCase):
             )
             self.assertIn("lead_action_queue", message)
             self.assertIn("record-delivery-batch", json.dumps(message["lead_action_queue"]))
+            self.assertIn("state message is already recorded", message["lead_action_queue"]["delivery_note"])
+            self.assertIn("host delivery is pending", message["lead_action_queue"]["delivery_note"])
 
             result_file = Path(tmp) / "delivery-results.json"
             result_file.write_text(
@@ -2236,12 +2314,17 @@ class AgentTeamCliTests(unittest.TestCase):
 
             run_cli_inprocess(tmp, "claim", "--agent", "builder", "--task", "T1")
             run_cli_inprocess(tmp, "complete", "--agent", "builder", "--task", "T1", "--summary", "Built.")
+            run_cli_inprocess(tmp, "message", "--from", "lead", "--to", "builder", "--body", "Optional unread.")
             run_cli_inprocess(tmp, "gate", "--verification-passed", "true")
             cleaned = json.loads(run_cli_inprocess(tmp, "cleanup").stdout)
             self.assertIn("unread_at_cleanup", cleaned)
 
             dashboard = json.loads(run_cli_inprocess(tmp, "dashboard").stdout)["dashboard"]
+            queue = json.loads(run_cli_inprocess(tmp, "dashboard").stdout)["lead_action_queue"]
             self.assertIn("Team cleaned. No further action required.", dashboard)
+            self.assertIn("Optional cleanup:", dashboard)
+            self.assertIn("unread cleanup is optional", dashboard)
+            self.assertEqual(queue["next_actions"], ["Team cleaned. No further action required."])
 
     def test_finalize_prompt_includes_task_context_and_batch_record_hints(self):
         with tempfile.TemporaryDirectory() as tmp:

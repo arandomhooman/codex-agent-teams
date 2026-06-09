@@ -59,7 +59,9 @@ python $AgentTeam --workspace . stop-check
 python $AgentTeam --workspace . cleanup --ack-closed
 ```
 
-Useful names agents should recognize: `claim --task`, `message --to team`, `record-delivery-batch`, `replace-subagent`, `init --force`, and `launch --force`.
+Useful names agents should recognize: `claim --task`, `message --to team`, `record-delivery-batch`, `replace-subagent`, `init --force`, `launch --force`, and `--context-mode reference`.
+
+For large shared files, prefer `--context-file <path> --context-mode reference`. That tells teammates to read the file from the workspace without duplicating the full contents inside every spawn prompt.
 
 ## Shared workspace semantics
 
@@ -72,7 +74,7 @@ The skill contains detailed recovery instructions. The short version:
 | Situation | Use |
 | --- | --- |
 | Unbound ready teammate | `orchestrate --spawn-policy ready-only`, then `bind-subagent`. |
-| Pending delivery | Execute host `send_input`, then `record-delivery-batch`. |
+| Pending delivery | The message is already in team state; execute host `send_input`, then `record-delivery-batch`. |
 | Waiting runtime | Save raw `wait_agent` output, then `record-wait-batch --result-file <json>`. |
 | Close-ready runtime | Execute close/archive, then `record-close-batch --result-file <json>`. |
 | Dead or replaced runtime | `replace-subagent`. |

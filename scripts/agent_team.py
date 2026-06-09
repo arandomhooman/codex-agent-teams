@@ -129,13 +129,14 @@ def state_lock(workspace: str | Path):
                 "command": " ".join(sys.argv[1:3]),
             }
             os.write(fd, (json.dumps(metadata, sort_keys=True) + "\n").encode("utf-8"))
-        except FileExistsError:
+        except (FileExistsError, PermissionError) as exc:
             if is_stale_lock(lock_path):
                 recovered_stale = recover_stale_lock(lock_path) or recovered_stale
                 if recovered_stale:
                     continue
             if time.time() > deadline:
-                raise TeamError("state_locked", f"Timed out waiting for {lock_path}", 2)
+                detail = f": {exc}" if isinstance(exc, PermissionError) else ""
+                raise TeamError("state_locked", f"Timed out waiting for {lock_path}{detail}", 2) from exc
             sleep_with_backoff(attempt)
             attempt += 1
     try:
@@ -481,6 +482,7 @@ def read_workspace_text(
 
 def collect_prompt_options(args: argparse.Namespace, member_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
     allow_outside = bool(getattr(args, "allow_outside_workspace", False))
+    context_mode = getattr(args, "context_mode", "embed")
     brief_parts: list[str] = []
     brief_parts.extend(getattr(args, "brief", []) or [])
     for raw_path in getattr(args, "brief_file", []) or []:
@@ -489,8 +491,12 @@ def collect_prompt_options(args: argparse.Namespace, member_map: dict[str, dict[
 
     context_files = []
     for raw_path in getattr(args, "context_file", []) or []:
-        path, text = read_workspace_text(args.workspace, raw_path, "--context-file", allow_outside)
-        context_files.append({"path": path, "content": text})
+        if context_mode == "reference":
+            path = resolve_workspace_path(args.workspace, raw_path, "--context-file", allow_outside)
+            context_files.append({"path": str(path), "content": "", "mode": "reference"})
+        else:
+            path, text = read_workspace_text(args.workspace, raw_path, "--context-file", allow_outside)
+            context_files.append({"path": path, "content": text, "mode": "embed"})
 
     for raw in getattr(args, "member_context", []) or []:
         name, value = split_assignment(raw, "--member-context")
@@ -1048,8 +1054,11 @@ def build_agent_prompt(state: dict[str, Any], agent: str, workspace: str | Path 
         prompt_lines.extend(["", "Shared context files:"])
         for context in context_files:
             prompt_lines.append(f"- {context.get('path', '<unknown>')}:")
-            for line in str(context.get("content", "")).splitlines() or [""]:
-                prompt_lines.append(f"  {line}")
+            if context.get("mode") == "reference":
+                prompt_lines.append("  Read this file from the shared workspace; content is not embedded to keep launch output compact.")
+            else:
+                for line in str(context.get("content", "")).splitlines() or [""]:
+                    prompt_lines.append(f"  {line}")
     if member.get("prompt_context"):
         prompt_lines.extend(["", "Agent-specific context:"])
         for item in member.get("prompt_context", []):
@@ -1082,6 +1091,8 @@ def build_agent_prompt(state: dict[str, Any], agent: str, workspace: str | Path 
             prompt_lines.extend(
                 [
                     "- Reviewer checklist: verify cited paths exist, flag malformed links, and separate evidence from inference.",
+                    "- challenge unsupported claims and call out assumptions that need lead verification.",
+                    "- check final report quality before the verification gate: consistency, evidence, links, and unresolved risks.",
                     "- Do not mark verification passed; report exact checks for the lead to run or confirm.",
                 ]
             )
@@ -1277,6 +1288,10 @@ def lead_action_queue(workspace: str | Path, phase: str, actions: list[dict[str,
     if phase in {"deliver_messages", "message_delivery"}:
         queue["matching_record_command"] = f"{invocation} record-delivery-batch --result-file <delivery_results.json>"
         queue["result_file_skeleton"] = delivery_result_skeleton(actions)
+        queue["delivery_note"] = (
+            "The state message is already recorded; host delivery is pending until send_input runs "
+            "and record-delivery or record-delivery-batch records sent, failed, or read."
+        )
     elif phase == "wait_agents":
         queue["matching_record_command"] = f"{invocation} record-wait-batch --result-file <wait_results.json>"
         queue["result_file_skeleton"] = wait_result_skeleton(actions)
@@ -2371,13 +2386,7 @@ def verification_evidence_records(state: dict[str, Any]) -> list[dict[str, Any]]
 def next_actions_for_state(state: dict[str, Any], workspace: str | Path = ".") -> list[str]:
     invocation = script_invocation(workspace)
     if state.get("status") == "cleaned":
-        actions = ["Team cleaned. No further action required."]
-        if unread_recipient_count(state):
-            actions.append(
-                f"Optional unread cleanup: {invocation} ack-all --agent <agent> --reason <reason> "
-                f"or {invocation} ack-closed --reason <reason>"
-            )
-        return actions
+        return ["Team cleaned. No further action required."]
     actions: list[str] = []
     for task in sorted(state["tasks"].values(), key=lambda item: item["id"]):
         owner = task["owner"]
@@ -2486,6 +2495,17 @@ def next_actions_for_state(state: dict[str, Any], workspace: str | Path = ".") -
     return actions
 
 
+def optional_unread_cleanup_text(state: dict[str, Any], workspace: str | Path = ".") -> str | None:
+    if state.get("status") != "cleaned" or not unread_recipient_count(state):
+        return None
+    invocation = script_invocation(workspace)
+    return (
+        "unread cleanup is optional: "
+        f"{invocation} ack-all --agent <agent> --reason <reason> "
+        f"or {invocation} ack-closed --reason <reason>"
+    )
+
+
 def dashboard_text(state: dict[str, Any], workspace: str | Path = ".") -> str:
     attention = attention_summary(state)
     next_actions = next_actions_for_state(state, workspace)
@@ -2556,6 +2576,9 @@ def dashboard_text(state: dict[str, Any], workspace: str | Path = ".") -> str:
     unread = unread_recipient_count(state)
     lines.append("")
     lines.append(f"Messages: {len(state['messages'])} total, {unread} unread recipient deliveries")
+    optional_cleanup = optional_unread_cleanup_text(state, workspace)
+    if optional_cleanup:
+        lines.extend(["", "Optional cleanup:", f"- {optional_cleanup}"])
     return "\n".join(lines)
 
 
@@ -2630,6 +2653,9 @@ def dashboard_markdown(state: dict[str, Any], workspace: str | Path = ".") -> st
             exit_code = record.get("exit_code")
             summary = record.get("summary") or "-"
             lines.append(f"- exit=`{exit_code}` command=`{command}` - {summary}")
+    optional_cleanup = optional_unread_cleanup_text(state, workspace)
+    if optional_cleanup:
+        lines.extend(["", "## Optional Cleanup", "", f"- {optional_cleanup}"])
     lines.append("")
     return "\n".join(lines)
 
@@ -2878,6 +2904,7 @@ def add_prompt_context_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--brief", action="append", default=[], help="Extra team brief text to include in teammate prompts")
     command.add_argument("--brief-file", action="append", default=[], help="Workspace-contained file with team brief text")
     command.add_argument("--context-file", action="append", default=[], help="Workspace-contained shared context file to embed in prompts")
+    command.add_argument("--context-mode", choices=["embed", "reference"], default="embed", help="Embed context file contents or reference paths only")
     command.add_argument("--member-context", action="append", default=[], help="Per-agent prompt context as agent=text")
     command.add_argument("--member-context-file", action="append", default=[], help="Per-agent prompt context file as agent=path")
     command.add_argument("--verification-check", action="append", default=[], help="Verification checklist item to include in prompts")

@@ -83,6 +83,7 @@ python $AgentTeam --workspace . launch `
   --depends "T3:T2" `
   --brief "Preserve existing repo style and keep changes tightly scoped." `
   --context-file .\team-context.md `
+  --context-mode reference `
   --member-context "reviewer=Check file links, citations, and verification evidence." `
   --require-citations `
   --verification-check "Report exact files changed and commands run."
@@ -138,6 +139,7 @@ Messages to bound subagents return `multi_agent_v1.send_input` delivery actions.
 
 Generated teammate prompts include the absolute workspace path, exact state file path, and exact team command. This prevents subagents from accidentally reading an older `.codex-agent-teams/state.json` in a different current directory.
 Shared workspace semantics: subagents and the lead operate in the same filesystem workspace. Forked context is conversation context, not a separate file tree. Assign clear write scopes and keep outputs inside the team workspace unless the lead intentionally allows an outside path.
+Use `--context-mode reference` with large `--context-file` inputs when launch output would get noisy; teammates receive the file path and must read the shared workspace file themselves.
 Prefer a stable source command path or wrapper in handoffs and docs. Avoid depending on installed cache paths under `.codex\plugins\cache\...`; cachebuster reinstalls intentionally change those paths. If you maintain a wrapper command, set `CODEX_AGENT_TEAM_COMMAND` and generated prompts/record commands will use that stable command instead.
 Use `orchestrate` as the best available lead-runtime loop. It emits the next host-tool phase with stable action IDs: `spawn_unbound`, `deliver_messages`, `wake_ready`, `wait_agents`, `finalize_overdue`, `close_ready`, `cleanup_ready`, or `work_incomplete`. Codex still has to execute the returned host-tool actions because plugin scripts cannot call `multi_agent_v1` directly. Record message sends with `record-delivery`, record `wait_agent` results with `record-wait`, and record close actions with `record-close` so cleanup is gated on runtime lifecycle, not just task completion. Treat `wait_agents` as a wait-all phase: keep waiting until every listed teammate reaches a final runtime status, then save the raw wait_agent output to JSON and run `record-wait-batch --result-file <json>`.
 
@@ -153,10 +155,11 @@ Useful lead commands:
 - `claim` refuses a second active task for the same teammate, `claim --task <task_id>` claims a specific ready task, and `complete` requires the task to be dependency-clean, claimed, and in progress. Lead-owned tasks may use `claim --agent lead` and `complete --agent lead`; lead is still never spawned, waited, closed, or replaced.
 - `complete --output <path>` records task artifacts in state so dashboard and final reporting can show produced files directly.
 - `cancel --task <id> --reason <text>` cancels open work; `reassign --task <id> --agent <member> --reason <text>` moves open work and clears the old owner's `current_task`.
+- Reviewer members should act as challengers: flag unsupported claims, separate evidence from inference, and check final report quality before the lead records the verification gate.
 - Dashboard unread totals count unread recipient deliveries, not just messages, so broadcasts stay visible until every recipient acknowledges them.
 - `init --force` and `launch --force` archive existing state before replacing it; without `--force`, they refuse to overwrite an active `.codex-agent-teams/state.json`.
-- `--brief`, `--brief-file`, `--context-file`, `--member-context`, `--member-context-file`, `--verification-check`, and `--require-citations` make launch prompts more task-specific and add citation/reviewer quality gates.
-- `message --from <sender> --to <agent|all|team> --body-file <path>` safely routes long multiline peer notes; `team` is a broadcast alias for `all`. `--body-file`, `record-wait --summary-file`, `record-close --summary-file`, and `dashboard --output` stay inside the team workspace unless `--allow-outside-workspace` is explicit.
+- `--brief`, `--brief-file`, `--context-file`, `--context-mode embed|reference`, `--member-context`, `--member-context-file`, `--verification-check`, and `--require-citations` make launch prompts more task-specific and add citation/reviewer quality gates.
+- `message --from <sender> --to <agent|all|team> --body-file <path>` safely routes long multiline peer notes; `team` is a broadcast alias for `all`. Messages are recorded in team state immediately; host delivery remains pending until the lead executes the emitted `send_input` action and records it with `record-delivery` or `record-delivery-batch`. `--body-file`, `record-wait --summary-file`, `record-close --summary-file`, and `dashboard --output` stay inside the team workspace unless `--allow-outside-workspace` is explicit.
 - `--actor <name>` or `CODEX_AGENT_TEAM_ACTOR=<name>` enables CLI guardrails that block worker use of lead-only commands and sender spoofing. Treat this as accidental misuse protection, not hard security.
 - `orchestrate --spawn-policy ready-only|open|all` emits the next lead-executable host-tool phase. It defaults to `ready-only`, so blocked future workers are not spawned until dependencies unblock. `launch --spawn-policy ready-only|open|all` and `launch-plan --spawn-policy ready-only|open|all` are also available; plain `launch` and `launch-plan` remain full-team starts for compatibility.
 - `gate --verification-command <cmd> --verification-exit-code <n> --verification-summary <text>` stores verification evidence alongside pass/fail state. Use `--verification-summary-file <path>` for long output.
