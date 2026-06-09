@@ -1,29 +1,24 @@
 # Codex Agent Teams
 
-Codex Agent Teams is a local Codex plugin that recreates the useful parts of Claude Code-style agent teams: a lead coordinator, named teammates, shared task state, dependency-aware assignment, direct messages, verification gates, cleanup gates, dashboard output, and hook-compatible stop/idle helpers.
+Codex Agent Teams is a Codex plugin for agents who need Claude Code-style team coordination: a lead, named teammates, shared task state, dependency-aware work claiming, teammate messages, dashboards, gates, cleanup, and hook-compatible stop/idle helpers.
 
-The plugin is intentionally subagent-first. It does not create forked chat teams as the main path; instead, it tracks the team in local state and emits host-tool action plans for real Codex subagents.
+This README is written for agents first. If you are a human, the easiest path is to tell your Codex agent to install and use the plugin for you.
 
-## What It Provides
+## Tell Your Agent To Install It
 
-| Team feature | Codex Agent Teams implementation |
-| --- | --- |
-| Lead coordinator | The current Codex session acts as lead. |
-| Named teammates | `init` / `launch` with `--member name=role`. |
-| Shared task state | `.codex-agent-teams/state.json` in the target workspace. |
-| Dependencies | `--depends task:dependency` and readiness-aware `claim`. |
-| Direct messages | `message`, `inbox`, `ack`, `ack-all`, and host delivery recording. |
-| Subagent backend | `launch`, `orchestrate`, `wake-plan`, and `close-plan` emit `multi_agent_v1` host-tool plans. |
-| Runtime bookkeeping | `bind-subagent`, `replace-subagent`, `record-wait(-batch)`, `record-close(-batch)`, and `record-delivery(-batch)`. |
-| Human dashboard | `dashboard` with ready, blocked, active, timed-out, pending-input, artifact, and verification sections. |
-| Gates | `gate`, `stop-check`, and cleanup refusal while work/runtimes remain open. |
-| Hooks | `hooks/agent_team_stop.py`, `hooks/agent_team_idle.py`, and `hook-config`. |
+Give your Codex agent this prompt, replacing `<repo-url>` with the GitHub URL for this repository:
 
-## Installation
+```text
+Please install Codex Agent Teams for me from <repo-url>.
 
-Clone the plugin somewhere stable, then install it through a local Codex plugin marketplace entry that points at this repository.
+Clone the repo to a stable local plugin path such as ~/plugins/codex-agent-teams.
+Add or update my personal Codex plugin marketplace so it points at that local clone.
+Validate the plugin, install it with `codex plugin add codex-agent-teams@personal`, and verify it appears in `codex plugin list`.
+If the plugin source changes during install, update the Codex cachebuster first.
+After install, tell me the local source path, installed version, and the exact command I should use or set as CODEX_AGENT_TEAM_COMMAND.
+```
 
-For command examples, replace `path/to/codex-agent-teams` with your local clone:
+If your agent is doing the install manually, the stable command should look like one of these:
 
 ```powershell
 $AgentTeam = "path\to\codex-agent-teams\scripts\agent_team.py"
@@ -34,15 +29,46 @@ $env:CODEX_AGENT_TEAM_COMMAND = "python $AgentTeam"
 export CODEX_AGENT_TEAM_COMMAND='python /path/to/codex-agent-teams/scripts/agent_team.py'
 ```
 
-`CODEX_AGENT_TEAM_COMMAND` is optional, but recommended. Generated prompts and record commands use it instead of an installed cache path, which avoids path drift after plugin reinstalls.
+`CODEX_AGENT_TEAM_COMMAND` is recommended because generated teammate prompts and record commands can use that stable source command instead of a changing installed-cache path.
 
-## Quick Start
+## Agent Decision Rule
 
-Run team commands from the workspace the team should manage.
+Use ordinary Codex subagents for one-shot packets: a bounded review, research task, test run, or implementation slice that can report once and disappear.
+
+Use Codex Agent Teams when coordination itself is part of the job:
+
+- the user asks for an agent team, teammates, a swarm, Claude teams, shared task tracking, or a lead-managed workflow
+- multiple roles need dependencies, handoffs, or messages
+- work should survive across turns in `.codex-agent-teams/state.json`
+- the lead must enforce plan approval, verification, stop gates, or cleanup
+- a reviewer needs to compare files produced by multiple workers
+
+Inside an Agent Team, prefer real Codex subagents first. Use thread delegation only as a fallback when subagents are unavailable, and simulated packet passes only when no delegation backend is available.
+
+## Agent Operating Model
+
+| Team concept | What the agent should use |
+| --- | --- |
+| Lead | The current Codex session. |
+| Teammates | Named `--member name=role` entries. |
+| Team state | `.codex-agent-teams/state.json` in the target workspace. |
+| Task ownership | `claim`, `claim --task`, `complete`, `cancel`, and `reassign`. |
+| Dependencies | `--depends task:dependency`; blocked work should not be spawned with `ready-only`. |
+| Messages | `message`, `inbox`, `ack`, `ack-all`, `ack-closed`, and delivery recording. |
+| Runtime handles | `bind-subagent` for first binding, `replace-subagent` for recovery. |
+| Host actions | `launch`, `orchestrate`, `wake-plan`, and `close-plan` emit action plans. |
+| Recording | `record-delivery-batch`, `record-wait-batch`, and `record-close-batch`. |
+| Human visibility | `dashboard` and optional Markdown dashboard output. |
+| Completion gates | `gate`, `stop-check`, `close-plan`, and `cleanup`. |
+
+Important: plugin scripts do not directly execute `multi_agent_v1`. They emit host-tool action plans. The lead Codex session executes those host-tool calls, then records results back into team state.
+
+## Quick Start For Agents
+
+Run commands from the workspace the team should manage.
 
 ```powershell
-python $AgentTeam --workspace . launch `
-  --spawn-policy ready-only `
+python $AgentTeam --workspace . launch --spawn-policy ready-only `
   --title "Feature build" `
   --lead lead `
   --member "researcher=Map requirements and constraints" `
@@ -57,7 +83,9 @@ python $AgentTeam --workspace . launch `
   --verification-check "Report exact files changed and commands run."
 ```
 
-`launch` creates `.codex-agent-teams/state.json` and emits spawn actions for the lead to execute. Use the emitted spawn args exactly. Do not add unsupported `agent_type`, `model`, or reasoning overrides when `fork_context=true` unless the host tool schema supports them.
+`launch --spawn-policy ready-only` starts only dependency-ready teammates. Plain `launch` remains a full-team start for compatibility, so agents should prefer `ready-only` when dependencies exist.
+
+When `launch` emits spawn actions, execute the emitted spawn args exactly. Do not add unsupported `agent_type`, `model`, or reasoning overrides when `fork_context=true` unless the host tool schema explicitly supports them.
 
 After each spawn returns, bind the runtime handle:
 
@@ -65,14 +93,14 @@ After each spawn returns, bind the runtime handle:
 python $AgentTeam --workspace . bind-subagent --agent researcher --agent-id <agent_id> --nickname <nickname>
 ```
 
-Then use the normal loop:
+Then run the lead loop:
 
 ```powershell
 python $AgentTeam --workspace . dashboard
-python $AgentTeam --workspace . orchestrate
+python $AgentTeam --workspace . orchestrate --spawn-policy ready-only
 python $AgentTeam --workspace . record-wait-batch --result-file .\wait-agent-result.json
 python $AgentTeam --workspace . record-close-batch --result-file .\close-agent-results.json
-python $AgentTeam --workspace . gate --verification-passed true --verification-command "python -m unittest discover -s tests -v" --verification-exit-code 0 --verification-summary "All tests passed."
+python $AgentTeam --workspace . gate --verification-passed true --verification-command "<command>" --verification-exit-code 0 --verification-summary "<summary>"
 python $AgentTeam --workspace . stop-check
 python $AgentTeam --workspace . cleanup --ack-closed
 ```
@@ -81,22 +109,52 @@ python $AgentTeam --workspace . cleanup --ack-closed
 
 Subagents and the lead operate in the same filesystem workspace. Forked context is conversation context, not a separate checkout or isolated file tree. Assign clear write scopes, keep generated artifacts inside the team workspace, and use `--allow-outside-workspace` only when crossing that boundary is intentional.
 
-## When To Use This Instead Of Plain Subagents
+## Lead Workflow Checklist
 
-Use plain Codex subagents for disposable one-shot packets: a bounded review, research task, test run, or implementation slice that can report back once and disappear.
+1. Initialize with `launch --spawn-policy ready-only` when dependencies exist.
+2. Execute emitted host-tool actions exactly.
+3. Bind new subagent handles with `bind-subagent`.
+4. Use `dashboard` to decide the next correct action.
+5. Use `claim --task <id>` when the exact task matters.
+6. Use `message --to team` for broadcast handoffs.
+7. Use `orchestrate` to emit the next spawn, delivery, wake, wait, finalize, close, or cleanup phase.
+8. Save raw host-tool results to JSON and batch-record them.
+9. Record verification evidence with `gate`.
+10. Run `stop-check` before final response.
+11. Close runtimes, record closes, and run `cleanup`.
 
-Use Codex Agent Teams when coordination itself matters:
+Use `init --force` or `launch --force` only when intentionally archiving and replacing an existing team state.
 
-- multiple named roles need shared state or handoffs
-- tasks have dependencies
-- teammates need direct messages
-- work should survive across turns
-- the lead needs approval, verification, stop, or cleanup gates
-- output quality depends on a reviewer comparing multiple workers' files
+## Common recovery flows
 
-Inside Agent Teams, prefer real Codex subagents first. Use thread delegation only as a fallback when subagents are unavailable, and simulated packet passes only when no delegation backend exists.
+| Dashboard says | Agent action |
+| --- | --- |
+| Unbound members | Run `orchestrate --spawn-policy ready-only`, execute spawn actions, then `bind-subagent`. |
+| Blocked future workers skipped | Expected with `ready-only`; dependencies will wake them later. |
+| Runtime already bound | Use `replace-subagent`; `bind-subagent` is for first binding only. |
+| Pending deliveries | Execute `send_input`, save results, then run `record-delivery-batch --result-file <json>`. |
+| Waiting members | Keep `wait_agent` looping until every target is final, save raw output, then run `record-wait-batch --result-file <json>`. |
+| Close-ready members | Execute close/archive actions, save results, then run `record-close-batch --result-file <json>`. |
+| Timed-out agent | Run `orchestrate` for finalize nudges; if recovery fails, use `replace-subagent` or `record-wait --status errored`. |
+| Blocked writer or reviewer | Use `reassign` or `cancel` with a reason. |
+| Unread messages after cleanup | Cleanup may proceed; optionally run `ack-all` or `ack-closed`. |
+| Stale lock or corrupt state | Run `repair`, then `repair --unlock-stale --clean-temps`, or `repair --restore-backup`. |
 
-## Core Commands
+Batch result examples:
+
+```json
+{"results":[{"message":"m1","agent":"builder","status":"sent"}]}
+```
+
+```json
+{"results":[{"target":"agent-builder","status":"completed","summary":"Builder finished."}]}
+```
+
+```json
+{"results":[{"target":"agent-builder","status":"closed","summary":"Closed."}]}
+```
+
+## Core Command Map
 
 ```powershell
 python $AgentTeam --workspace . dashboard
@@ -113,48 +171,16 @@ python $AgentTeam --workspace . replace-subagent --agent builder --agent-id <new
 python $AgentTeam --workspace . repair
 ```
 
-Use `launch --force` or `init --force` only when you intentionally want to archive and replace an existing team state.
-
-## Common Recovery Flows
-
-| Dashboard says | What to do |
-| --- | --- |
-| Unbound members | Run `orchestrate --spawn-policy ready-only`, execute spawn actions, then `bind-subagent`. |
-| Blocked future workers skipped | This is expected with `ready-only`; dependencies will wake them later. |
-| Runtime already bound | Use `replace-subagent`; `bind-subagent` is for first binding only. |
-| Pending deliveries | Execute `send_input`, save results, then run `record-delivery-batch --result-file <json>`. |
-| Waiting members | Keep `wait_agent` looping until every target is final, save raw output, then run `record-wait-batch --result-file <json>`. |
-| Close-ready members | Execute close/archive actions, save results, then run `record-close-batch --result-file <json>`. |
-| Timed-out agent | Run `orchestrate` for finalize nudges; if recovery fails, use `replace-subagent` or `record-wait --status errored`. |
-| Blocked writer/reviewer | Use `reassign` or `cancel` with a reason. |
-| Unread messages after cleanup | Cleanup may proceed; optionally run `ack-all` or `ack-closed`. |
-| Stale lock or corrupt state | Run `repair`, then `repair --unlock-stale --clean-temps`, or `repair --restore-backup`. |
-
-Batch result files use simple JSON:
-
-```json
-{"results":[{"message":"m1","agent":"builder","status":"sent"}]}
-```
-
-```json
-{"results":[{"target":"agent-builder","status":"completed","summary":"Builder finished."}]}
-```
-
-```json
-{"results":[{"target":"agent-builder","status":"closed","summary":"Closed."}]}
-```
-
-## Limitations
+## Limitations Agents Must Preserve
 
 - This is not a native Codex team UI. It is a plugin-backed coordination layer.
-- Plugin scripts do not directly execute `multi_agent_v1`. They emit host-tool action plans, and the lead Codex session executes those actions.
-- The lifecycle loop still has explicit bookkeeping: spawn, bind, wait, record wait, close, record close. Batch recording reduces the friction but does not remove host-tool ownership.
-- Runtime state is only as accurate as the host-tool results that get recorded back into team state.
+- The plugin does not directly call `multi_agent_v1`; the lead executes emitted host-tool plans.
+- The lifecycle loop is still explicit: spawn, bind, wait, record wait, close, record close. Batch recording reduces friction but does not remove host-tool ownership.
+- Runtime state is only as accurate as the host-tool results recorded back into state.
 - CLI actor guardrails prevent common mistakes, but they are not a security boundary.
-- Subagents and the lead share the same filesystem workspace. Forked context is conversation context, not a separate checkout.
-- Hook discovery is host-specific, so this repo ships hook wrapper commands instead of declaring unsupported manifest hook fields.
+- Hook discovery is host-specific, so hook wrappers are commands rather than manifest hook fields.
 
-## Hooks
+## Hook Commands
 
 Stop gate:
 
@@ -175,7 +201,7 @@ Generate host hook snippets:
 python $AgentTeam --workspace . hook-config --agent builder
 ```
 
-## Development
+## Development Checks
 
 Run tests:
 
@@ -183,13 +209,13 @@ Run tests:
 python -m unittest discover -s tests -v
 ```
 
-Validate the plugin with Codex's plugin validator:
+Validate the plugin:
 
 ```powershell
 python path\to\plugin-creator\scripts\validate_plugin.py path\to\codex-agent-teams
 ```
 
-During local plugin iteration, update the cachebuster and reinstall from your local marketplace:
+During local plugin iteration, update the cachebuster and reinstall:
 
 ```powershell
 python path\to\plugin-creator\scripts\update_plugin_cachebuster.py path\to\codex-agent-teams
